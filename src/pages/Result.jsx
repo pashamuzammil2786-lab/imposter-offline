@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   getRandomDiscussionStarter,
@@ -28,6 +28,17 @@ const Result = ({ navigateTo, gameState, updateGameState, resetGame }) => {
       playSound('click');
     }
   }, [players, discussionStarter]);
+
+  const intervalRef = useRef(null);
+
+  // Clean up interval on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, []);
 
   // Handle revealing imposters - FIXED
   const revealImposters = () => {
@@ -62,21 +73,23 @@ const Result = ({ navigateTo, gameState, updateGameState, resetGame }) => {
     setRevealedImposters([]);
     
     // Reveal one by one
-    const interval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       if (currentIndex < imposterNames.length) {
-        setRevealedImposters(prev => [...prev, imposterNames[currentIndex]]);
+        const nextImposter = imposterNames[currentIndex];
+        setRevealedImposters(prev => [...prev, nextImposter]);
         playSound('click');
         vibrate(50);
         currentIndex++;
       } else {
-        clearInterval(interval);
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
         setIsRevealing(false);
         playSound('success');
         vibrate(100);
       }
     }, 500);
-    
-    return () => clearInterval(interval);
   };
 
   // Start new game
@@ -279,6 +292,54 @@ const Result = ({ navigateTo, gameState, updateGameState, resetGame }) => {
                 </motion.div>
               )}
             </div>
+
+            {/* Secret Word Display */}
+            {!isRevealing && revealedImposters.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  marginTop: '20px',
+                  paddingTop: '20px',
+                  borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <p style={{
+                  fontSize: '12px',
+                  color: 'rgba(255,255,255,0.3)',
+                  letterSpacing: '2px',
+                  textTransform: 'uppercase',
+                  fontWeight: 500,
+                }}>
+                  🔑 Secret Word
+                </p>
+                <h2 style={{
+                  fontSize: 'clamp(1.8rem, 5vw, 2.5rem)',
+                  fontWeight: 900,
+                  color: '#00cec9',
+                  fontFamily: "'Inter', sans-serif",
+                  textAlign: 'center',
+                  wordBreak: 'break-word',
+                  textShadow: '0 0 20px rgba(0,206,201,0.2)',
+                  lineHeight: 1.2,
+                }}>
+                  {word}
+                </h2>
+                <p style={{
+                  fontSize: '13px',
+                  color: 'rgba(255,255,255,0.4)',
+                  fontWeight: 400,
+                }}>
+                  Category: {category}
+                </p>
+              </motion.div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
