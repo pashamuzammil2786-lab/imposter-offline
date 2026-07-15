@@ -1,4 +1,4 @@
-const CACHE_NAME = 'imposter-game-v1';
+const CACHE_NAME = 'imposter-game-v2';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -8,6 +8,7 @@ const urlsToCache = [
 
 // Install Service Worker
 self.addEventListener('install', (event) => {
+  self.skipWaiting(); // Force the waiting service worker to become the active service worker
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => {
@@ -27,30 +28,48 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim()) // Force active service worker to take control of all open clients
   );
 });
 
-// Fetch with cache fallback
+// Fetch event
 self.addEventListener('fetch', (event) => {
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => {
-        if (response) {
+  const url = new URL(event.request.url);
+
+  // Network First for index.html / navigation to ensure instant updates when online
+  if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const responseToCache = response.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseToCache);
+            });
+          }
           return response;
-        }
-        return fetch(event.request)
-          .then((response) => {
+        })
+        .catch(() => caches.match(event.request))
+    );
+  } else {
+    // Cache First for other assets (JS, CSS, SVGs, etc.)
+    event.respondWith(
+      caches.match(event.request)
+        .then((response) => {
+          if (response) {
+            return response;
+          }
+          return fetch(event.request).then((response) => {
             if (!response || response.status !== 200 || response.type !== 'basic') {
               return response;
             }
             const responseToCache = response.clone();
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseToCache);
+            });
             return response;
           });
-      })
-  );
+        })
+    );
+  }
 });
