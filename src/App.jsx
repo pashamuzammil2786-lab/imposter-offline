@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import Landing from './pages/Landing'
+import ModeSelection from './pages/ModeSelection'
 import Home from './pages/Home'
 import Reveal from './pages/Reveal'
 import Result from './pages/Result'
+import OnlineSetup from './pages/OnlineSetup'
+import OnlineReveal from './pages/OnlineReveal'
+import OnlineResult from './pages/OnlineResult'
 
 function App() {
   const [currentPage, setCurrentPage] = useState('landing')
@@ -18,7 +22,9 @@ function App() {
     categoriesUsed: [],
     selectedCategory: '',
     selectedWord: '',
-    imposterCount: 1
+    imposterCount: 1,
+    onlineRoomId: '',
+    onlinePlayerName: '',
   })
 
   // Handle navigation between pages
@@ -48,6 +54,8 @@ function App() {
     switch(currentPage) {
       case 'landing':
         return <Landing navigateTo={navigateTo} />
+      case 'mode-selection':
+        return <ModeSelection navigateTo={navigateTo} />
       case 'home':
         return (
           <Home 
@@ -67,6 +75,31 @@ function App() {
       case 'result':
         return (
           <Result 
+            navigateTo={navigateTo} 
+            gameState={gameState} 
+            updateGameState={updateGameState} 
+            resetGame={resetGame}
+          />
+        )
+      case 'online-setup':
+        return (
+          <OnlineSetup 
+            navigateTo={navigateTo} 
+            gameState={gameState} 
+            updateGameState={updateGameState} 
+          />
+        )
+      case 'online-reveal':
+        return (
+          <OnlineReveal 
+            navigateTo={navigateTo} 
+            gameState={gameState} 
+            updateGameState={updateGameState} 
+          />
+        )
+      case 'online-result':
+        return (
+          <OnlineResult 
             navigateTo={navigateTo} 
             gameState={gameState} 
             updateGameState={updateGameState} 

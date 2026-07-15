@@ -6,7 +6,7 @@ const Landing = ({ navigateTo }) => {
   const handleEnterGame = () => {
     playSound('click');
     vibrate(50);
-    navigateTo('home');
+    navigateTo('mode-selection');
   };
 
   return (
