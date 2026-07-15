@@ -96,10 +96,6 @@ const Reveal = ({ navigateTo, gameState, updateGameState }) => {
     playSound('reveal');
     vibrate(100);
     
-    // Mark player as revealed
-    const newRevealed = [...revealedPlayers, currentPlayerIndex];
-    setRevealedPlayers(newRevealed);
-    
     setTimeout(() => {
       setIsFlipping(false);
     }, 400);
