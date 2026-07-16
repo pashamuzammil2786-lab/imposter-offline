@@ -9,7 +9,11 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
   const [localShowImposters, setLocalShowImposters] = useState(false);
   const [revealedImposters, setRevealedImposters] = useState([]);
   const [isRevealing, setIsRevealing] = useState(false);
+  
+  // Chat States
+  const [messageText, setMessageText] = useState('');
   const revealIntervalRef = useRef(null);
+  const chatEndRef = useRef(null);
 
   const localName = gameState.onlinePlayerName;
   const roomId = gameState.onlineRoomId;
@@ -26,7 +30,6 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
 
         // If host reset game to lobby, return everyone to online-setup
         if (data.status === 'lobby') {
-          // Reset local game state
           resetGame();
           navigateTo('online-setup');
         }
@@ -35,7 +38,6 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         if (data.showImposters && !localShowImposters && !isRevealing) {
           triggerLocalReveal(data.imposters, data.players);
         } else if (!data.showImposters && localShowImposters) {
-          // If host hid them, hide them locally
           setLocalShowImposters(false);
           setRevealedImposters([]);
         }
@@ -48,7 +50,14 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     };
   }, [roomId, localShowImposters, isRevealing]);
 
-  // Synchronized animation to reveal imposters one-by-one on everyone's screens
+  // Autoscroll chat
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [roomData?.messages, localShowImposters]);
+
+  // Synchronized animation to reveal imposters one-by-one
   const triggerLocalReveal = (imposterNames, allPlayers) => {
     setIsRevealing(true);
     setLocalShowImposters(true);
@@ -61,7 +70,6 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     revealIntervalRef.current = setInterval(() => {
       if (currentIndex < imposterNames.length) {
         const currentImposterName = imposterNames[currentIndex];
-        // Find player details to get their index
         const originalIndex = allPlayers.findIndex(p => p.name === currentImposterName);
         
         setRevealedImposters(prev => [
@@ -80,6 +88,45 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     }, 500);
   };
 
+  // Chat Actions: Send message
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!messageText.trim() || !roomData) return;
+
+    const message = {
+      sender: localName,
+      text: messageText.trim(),
+      timestamp: Date.now()
+    };
+
+    const roomRef = doc(db, 'rooms', roomId);
+    
+    try {
+      const updatedMessages = [...(roomData.messages || []), message];
+      
+      if (roomData.chatRound === 1) {
+        // Round 1 turn-based logic
+        const nextSpeakerIndex = roomData.currentSpeakerIndex + 1;
+        const isRound1Finished = nextSpeakerIndex >= roomData.players.length;
+        
+        await updateDoc(roomRef, {
+          messages: updatedMessages,
+          currentSpeakerIndex: nextSpeakerIndex,
+          chatRound: isRound1Finished ? 2 : 1
+        });
+      } else {
+        // Round 2 free discussion
+        await updateDoc(roomRef, {
+          messages: updatedMessages
+        });
+      }
+      setMessageText('');
+      playSound('click');
+    } catch (err) {
+      console.error('Failed to send message:', err);
+    }
+  };
+
   // Host Action: Trigger Imposter Reveal in database
   const handleHostReveal = async () => {
     if (!roomData || roomData.host !== localName || isRevealing) return;
@@ -87,10 +134,8 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     try {
       const roomRef = doc(db, 'rooms', roomId);
       if (roomData.showImposters) {
-        // Toggle hide
         await updateDoc(roomRef, { showImposters: false });
       } else {
-        // Toggle reveal
         await updateDoc(roomRef, { showImposters: true });
       }
     } catch (err) {
@@ -115,14 +160,17 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         revealedCount: 0,
         discussionStarter: '',
         showImposters: false,
-        players: roomData.players.map(p => ({ ...p, revealed: false })) // Reset status
+        chatRound: 1,
+        currentSpeakerIndex: 0,
+        messages: [],
+        players: roomData.players.map(p => ({ ...p, revealed: false }))
       });
     } catch (err) {
       console.error('Failed to restart lobby:', err);
     }
   };
 
-  // Player Action: Leave Room and exit
+  // Player Action: Leave Room
   const handleLeaveRoom = async () => {
     playSound('click');
     vibrate(30);
@@ -130,14 +178,11 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     try {
       if (roomData) {
         const roomRef = doc(db, 'rooms', roomId);
-        // If Host leaves, we can delete the room document or keep it. Let's just remove our name.
         const updatedPlayers = roomData.players.filter(p => p.name !== localName);
         
         if (updatedPlayers.length === 0) {
-          // If no one is left, delete room or reset
           await updateDoc(roomRef, { players: [] });
         } else {
-          // Otherwise, remove player, and if host is leaving, assign next host
           const newHost = roomData.host === localName ? updatedPlayers[0].name : roomData.host;
           await updateDoc(roomRef, {
             players: updatedPlayers,
@@ -166,6 +211,10 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
   const category = roomData.category;
   const discussionStarter = roomData.discussionStarter;
 
+  // Turn calculation for Round 1
+  const currentSpeaker = roomData.players[roomData.currentSpeakerIndex]?.name;
+  const isMyTurn = currentSpeaker === localName;
+
   return (
     <motion.div
       className="page-container"
@@ -175,18 +224,18 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
       transition={{ duration: 0.4 }}
       style={{
         background: 'linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #2d1b69 100%)',
-        justifyContent: 'center',
+        justifyContent: 'flex-start',
         padding: '16px',
-        gap: '16px',
+        gap: '12px',
         overflowY: 'auto',
       }}
     >
       {/* Title */}
       <motion.h1
-        initial={{ y: -30, opacity: 0 }}
+        initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         style={{
-          fontSize: 'clamp(2rem, 6vw, 3rem)',
+          fontSize: 'clamp(1.6rem, 5vw, 2.2rem)',
           fontFamily: "'Orbitron', sans-serif",
           fontWeight: 700,
           textAlign: 'center',
@@ -194,80 +243,159 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           WebkitBackgroundClip: 'text',
           WebkitTextFillColor: 'transparent',
           backgroundClip: 'text',
+          marginBottom: '4px',
         }}
       >
-        Game Over
+        Discussion Room
       </motion.h1>
 
-      {/* Discussion Starter */}
+      {/* Discussion Starter Card */}
       <motion.div
         className="glass-card-light"
-        initial={{ y: 20, opacity: 0 }}
+        initial={{ y: 15, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        transition={{ delay: 0.1 }}
         style={{
           width: '100%',
           textAlign: 'center',
-          padding: '24px',
+          padding: '12px 16px',
           borderColor: 'rgba(253,203,110,0.2)',
-          minHeight: '120px',
           display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
           justifyContent: 'center',
+          alignItems: 'center',
+          gap: '8px',
         }}
       >
-        <p style={{
-          fontSize: '13px',
-          color: 'rgba(255,255,255,0.3)',
-          letterSpacing: '2px',
-          textTransform: 'uppercase',
-          marginBottom: '8px',
-        }}>
-          🗣️ Discussion starts with
-        </p>
-        {discussionStarter && (
-          <motion.h3
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: 'spring', stiffness: 400 }}
-            style={{
-              fontSize: 'clamp(2rem, 6vw, 3rem)',
-              fontWeight: 800,
-              color: '#fdcb6e',
-              fontFamily: "'Inter', sans-serif",
-            }}
-          >
-            {discussionStarter}
-          </motion.h3>
-        )}
+        <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+          🗣 Discussion Starter:
+        </span>
+        <span style={{ fontSize: '16px', fontWeight: 800, color: '#fdcb6e' }}>
+          {discussionStarter}
+        </span>
       </motion.div>
 
-      {/* Reveal Imposters Buttons (Control interface differs for Host vs Player) */}
+      {/* RENDER CHAT INTERFACE: Hidden when imposters are revealed */}
+      {!localShowImposters ? (
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          
+          {/* Chat Turn / Round Status Indicator */}
+          <div style={{
+            background: roomData.chatRound === 1 ? 'rgba(108, 92, 231, 0.12)' : 'rgba(0, 184, 148, 0.12)',
+            border: roomData.chatRound === 1 ? '1px solid rgba(108, 92, 231, 0.2)' : '1px solid rgba(0, 184, 148, 0.2)',
+            borderRadius: '12px',
+            padding: '10px 12px',
+            textAlign: 'center',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: roomData.chatRound === 1 ? '#a29bfe' : '#55efc4'
+          }}>
+            {roomData.chatRound === 1 ? (
+              <span>
+                💬 <strong>Round 1 (Describe)</strong>: {isMyTurn ? "Your turn! Describe your word in 1 sentence." : `Waiting for ${currentSpeaker} to type...`}
+              </span>
+            ) : (
+              <span>
+                🗣️ <strong>Round 2 (Free Debate)</strong>: Chat freely and hunt the Imposter!
+              </span>
+            )}
+          </div>
+
+          {/* Messages list */}
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            height: '240px',
+            background: 'rgba(0, 0, 0, 0.2)',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            borderRadius: '16px',
+            padding: '12px',
+            overflowY: 'auto',
+            gap: '8px',
+          }}>
+            {roomData.messages && roomData.messages.length > 0 ? (
+              roomData.messages.map((msg, index) => (
+                <div 
+                  key={index}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignSelf: msg.sender === localName ? 'flex-end' : 'flex-start',
+                    maxWidth: '75%',
+                    padding: '8px 12px',
+                    borderRadius: '12px',
+                    background: msg.sender === localName ? 'rgba(108,92,231,0.25)' : 'rgba(255,255,255,0.06)',
+                    border: msg.sender === localName ? '1px solid rgba(108,92,231,0.3)' : '1px solid transparent',
+                  }}
+                >
+                  <span style={{ fontSize: '10px', color: msg.sender === localName ? '#fd79a8' : 'rgba(255,255,255,0.4)', fontWeight: 700, marginBottom: '2px' }}>
+                    {msg.sender}
+                  </span>
+                  <span style={{ fontSize: '13px', color: '#fff', wordBreak: 'break-word' }}>
+                    {msg.text}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div style={{ margin: 'auto', textAlign: 'center', color: 'rgba(255,255,255,0.2)', fontSize: '13px' }}>
+                Chat is empty. Start describing!
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Chat Form Input */}
+          <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: '8px', width: '100%' }}>
+            <input
+              type="text"
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              placeholder={
+                roomData.chatRound === 1
+                  ? isMyTurn
+                    ? "Type your description..."
+                    : `Waiting for ${currentSpeaker}...`
+                  : "Discuss who the imposter is..."
+              }
+              className="input-modern"
+              disabled={roomData.chatRound === 1 && !isMyTurn}
+              style={{ flex: 1 }}
+              maxLength={100}
+            />
+            <button
+              type="submit"
+              className="btn-success"
+              disabled={!messageText.trim() || (roomData.chatRound === 1 && !isMyTurn)}
+              style={{ width: 'auto', padding: '0 20px', borderRadius: '12px', fontSize: '14px', minHeight: '48px' }}
+            >
+              Send
+            </button>
+          </form>
+
+        </div>
+      ) : null}
+
+      {/* Reveal Imposters Button (Only shows when results are revealed OR for the Host to trigger) */}
       {isHost ? (
         <motion.button
           onClick={handleHostReveal}
           className="btn-danger"
           style={{
             padding: '16px',
-            fontSize: '18px',
+            fontSize: '16px',
             fontWeight: 700,
             width: '100%',
             borderRadius: '16px',
             background: 'linear-gradient(135deg, #e17055, #d63031)',
             boxShadow: '0 4px 20px rgba(214,48,49,0.4)',
             opacity: isRevealing ? 0.7 : 1,
+            marginTop: '8px',
           }}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.2 }}
           disabled={isRevealing}
         >
           {isRevealing ? 'Revealing...' : roomData.showImposters ? '🕵️ Hide Imposters' : '🕵️ Reveal Imposters'}
         </motion.button>
-      ) : (
+      ) : !roomData.showImposters ? (
         <div style={{
           width: '100%',
           padding: '16px',
@@ -275,14 +403,13 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           borderRadius: '16px',
           background: 'rgba(255,255,255,0.03)',
           border: '1px solid rgba(255,255,255,0.08)',
+          marginTop: '8px',
         }}>
-          <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.5)' }}>
-            {roomData.showImposters 
-              ? '🕵️ Imposters revealed!' 
-              : '⌛ Waiting for host to reveal imposters...'}
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
+            ⌛ Waiting for host to reveal imposters...
           </p>
         </div>
-      )}
+      ) : null}
 
       {/* Imposters & Secret Word Display Card */}
       <AnimatePresence>
@@ -296,6 +423,7 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
               width: '100%',
               padding: '20px',
               borderColor: 'rgba(214,48,49,0.2)',
+              marginTop: '8px',
             }}
           >
             <p style={{
@@ -309,44 +437,33 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
               🕵️ Imposters
             </p>
             
-            {/* Imposter Names list */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {revealedImposters.length > 0 ? (
-                revealedImposters.map((imposter, idx) => (
-                  <motion.div
-                    key={idx}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: idx * 0.1 }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '12px',
-                      padding: '12px',
-                      background: 'rgba(214,48,49,0.1)',
-                      borderRadius: '12px',
-                      border: '1px solid rgba(214,48,49,0.2)',
-                    }}
-                  >
-                    <span style={{ fontSize: '24px' }}>🎭</span>
-                    <span style={{ fontSize: '18px', fontWeight: 700, color: '#ff6b6b' }}>
-                      {imposter.name}
-                    </span>
-                    <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>
-                      Player {imposter.index + 1}
-                    </span>
-                  </motion.div>
-                ))
-              ) : (
+              {revealedImposters.map((imposter, idx) => (
                 <motion.div
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{ duration: 0.8, repeat: Infinity }}
-                  style={{ textAlign: 'center', padding: '16px', color: 'rgba(255,255,255,0.3)', fontSize: '13px' }}
+                  key={idx}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.1 }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px',
+                    padding: '12px',
+                    background: 'rgba(214,48,49,0.1)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(214,48,49,0.2)',
+                  }}
                 >
-                  Revealing imposters...
+                  <span style={{ fontSize: '24px' }}>🎭</span>
+                  <span style={{ fontSize: '18px', fontWeight: 700, color: '#ff6b6b' }}>
+                    {imposter.name}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>
+                    Player {imposter.index + 1}
+                  </span>
                 </motion.div>
-              )}
+              ))}
             </div>
 
             {/* Secret Word Display */}
@@ -399,7 +516,7 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         )}
       </AnimatePresence>
 
-      {/* Host Restart / Restart Round Control */}
+      {/* Host Restart Control */}
       {isHost && (
         <motion.button
           onClick={handleHostRestart}
@@ -416,9 +533,6 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           }}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.3 }}
         >
           🎮 Play Next Round
         </motion.button>
@@ -436,9 +550,6 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           opacity: 0.7,
           marginTop: '4px',
         }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 0.7 }}
-        transition={{ delay: 0.4 }}
       >
         🚪 Leave Room / Exit
       </motion.button>

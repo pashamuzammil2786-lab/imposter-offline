@@ -108,6 +108,9 @@ const OnlineSetup = ({ navigateTo, gameState, updateGameState }) => {
         imposterCount: 1,
         imposters: [],
         revealedCount: 0,
+        chatRound: 1,
+        currentSpeakerIndex: 0,
+        messages: [],
         createdAt: serverTimestamp()
       });
 
@@ -230,6 +233,9 @@ const OnlineSetup = ({ navigateTo, gameState, updateGameState }) => {
         imposterCount: imposterCount,
         imposters: imposterNames,
         revealedCount: 0,
+        chatRound: 1,
+        currentSpeakerIndex: 0,
+        messages: [],
         players: roomData.players.map(p => ({ ...p, revealed: false })) // Reset statuses
       });
     } catch (err) {
