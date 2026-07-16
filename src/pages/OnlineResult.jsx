@@ -57,33 +57,51 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
     }
   }, [roomData?.messages, localShowImposters]);
 
-  // Synchronized animation to reveal imposters one-by-one
-  const triggerLocalReveal = (imposterNames, allPlayers) => {
+  // Synchronized animation to reveal imposters one-by-one (Safe and robust)
+  const triggerLocalReveal = (imposterNames = [], allPlayers = []) => {
     setIsRevealing(true);
     setLocalShowImposters(true);
     playSound('reveal');
     vibrate(100);
 
+    const safeImposters = Array.isArray(imposterNames) ? imposterNames : [];
+    const safePlayers = Array.isArray(allPlayers) ? allPlayers : [];
+
     let currentIndex = 0;
     setRevealedImposters([]);
 
+    if (safeImposters.length === 0) {
+      setIsRevealing(false);
+      return;
+    }
+
     revealIntervalRef.current = setInterval(() => {
-      if (currentIndex < imposterNames.length) {
-        const currentImposterName = imposterNames[currentIndex];
-        const originalIndex = allPlayers.findIndex(p => p.name === currentImposterName);
-        
-        setRevealedImposters(prev => [
-          ...prev, 
-          { name: currentImposterName, index: originalIndex !== -1 ? originalIndex : currentIndex }
-        ]);
-        playSound('click');
-        vibrate(50);
-        currentIndex++;
-      } else {
+      try {
+        if (currentIndex < safeImposters.length) {
+          const currentImposterName = safeImposters[currentIndex];
+          if (!currentImposterName) {
+            currentIndex++;
+            return;
+          }
+          const originalIndex = safePlayers.findIndex(p => p && p.name === currentImposterName);
+          
+          setRevealedImposters(prev => [
+            ...prev, 
+            { name: currentImposterName, index: originalIndex !== -1 ? originalIndex : currentIndex }
+          ]);
+          playSound('click');
+          vibrate(50);
+          currentIndex++;
+        } else {
+          clearInterval(revealIntervalRef.current);
+          setIsRevealing(false);
+          playSound('success');
+          vibrate(100);
+        }
+      } catch (err) {
+        console.error("Error in local reveal interval:", err);
         clearInterval(revealIntervalRef.current);
         setIsRevealing(false);
-        playSound('success');
-        vibrate(100);
       }
     }, 500);
   };
@@ -111,19 +129,62 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         
         await updateDoc(roomRef, {
           messages: updatedMessages,
-          currentSpeakerIndex: nextSpeakerIndex,
+          currentSpeakerIndex: isRound1Finished ? 0 : nextSpeakerIndex,
           chatRound: isRound1Finished ? 2 : 1
         });
       } else {
-        // Round 2 free discussion
+        // Round 2 turn-based logic
+        const nextSpeakerIndex = roomData.currentSpeakerIndex + 1;
+        
         await updateDoc(roomRef, {
-          messages: updatedMessages
+          messages: updatedMessages,
+          currentSpeakerIndex: nextSpeakerIndex
         });
       }
       setMessageText('');
       playSound('click');
     } catch (err) {
       console.error('Failed to send message:', err);
+    }
+  };
+
+  // Host Action: Start Voting Stage
+  const handleStartVoting = async () => {
+    if (!roomData || roomData.host !== localName) return;
+
+    playSound('click');
+    vibrate(50);
+
+    try {
+      const roomRef = doc(db, 'rooms', roomId);
+      await updateDoc(roomRef, {
+        votingStarted: true,
+        votes: {}
+      });
+    } catch (err) {
+      console.error('Failed to start voting:', err);
+    }
+  };
+
+  // Player Action: Cast Vote
+  const handleCastVote = async (votedForName) => {
+    if (!roomData || !roomId) return;
+
+    playSound('click');
+    vibrate(30);
+
+    try {
+      const roomRef = doc(db, 'rooms', roomId);
+      const currentVotes = roomData.votes || {};
+      
+      await updateDoc(roomRef, {
+        votes: {
+          ...currentVotes,
+          [localName]: votedForName
+        }
+      });
+    } catch (err) {
+      console.error('Failed to cast vote:', err);
     }
   };
 
@@ -163,6 +224,8 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         chatRound: 1,
         currentSpeakerIndex: 0,
         messages: [],
+        votingStarted: false,
+        votes: {},
         players: roomData.players.map(p => ({ ...p, revealed: false }))
       });
     } catch (err) {
@@ -211,9 +274,26 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
   const category = roomData.category;
   const discussionStarter = roomData.discussionStarter;
 
-  // Turn calculation for Round 1
-  const currentSpeaker = roomData.players[roomData.currentSpeakerIndex]?.name;
+  // Turn calculation
+  const currentSpeaker = roomData.players && roomData.players[roomData.currentSpeakerIndex]?.name;
   const isMyTurn = currentSpeaker === localName;
+  const isRoundFinished = roomData.players && roomData.currentSpeakerIndex >= roomData.players.length;
+
+  // Voting stats
+  const votes = roomData.votes || {};
+  const totalVotesCast = Object.keys(votes).length;
+  const allVoted = roomData.players && totalVotesCast === roomData.players.length;
+
+  // Vote tabulation
+  const voteCounts = {};
+  if (roomData.players) {
+    roomData.players.forEach(p => { voteCounts[p.name] = 0; });
+    Object.values(votes).forEach(votedFor => {
+      if (voteCounts[votedFor] !== undefined) {
+        voteCounts[votedFor]++;
+      }
+    });
+  }
 
   return (
     <motion.div
@@ -246,7 +326,7 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           marginBottom: '4px',
         }}
       >
-        Discussion Room
+        {roomData.votingStarted ? "Voting Room" : "Discussion Room"}
       </motion.h1>
 
       {/* Discussion Starter Card */}
@@ -273,8 +353,8 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         </span>
       </motion.div>
 
-      {/* RENDER CHAT INTERFACE: Hidden when imposters are revealed */}
-      {!localShowImposters ? (
+      {/* 1. CHAT MODE (Show before voting is started) */}
+      {!localShowImposters && !roomData.votingStarted && (
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '10px' }}>
           
           {/* Chat Turn / Round Status Indicator */}
@@ -288,13 +368,13 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
             fontWeight: 600,
             color: roomData.chatRound === 1 ? '#a29bfe' : '#55efc4'
           }}>
-            {roomData.chatRound === 1 ? (
+            {!isRoundFinished ? (
               <span>
-                💬 <strong>Round 1 (Describe)</strong>: {isMyTurn ? "Your turn! Describe your word in 1 sentence." : `Waiting for ${currentSpeaker} to type...`}
+                💬 <strong>Round {roomData.chatRound}</strong>: {isMyTurn ? "Your turn! Type your description/comment." : `Waiting for ${currentSpeaker}...`}
               </span>
             ) : (
               <span>
-                🗣️ <strong>Round 2 (Free Debate)</strong>: Chat freely and hunt the Imposter!
+                ⌛ <strong>Discussion rounds complete!</strong> Waiting for host to start voting...
               </span>
             )}
           </div>
@@ -303,7 +383,7 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           <div style={{
             display: 'flex',
             flexDirection: 'column',
-            height: '240px',
+            height: '220px',
             background: 'rgba(0, 0, 0, 0.2)',
             border: '1px solid rgba(255, 255, 255, 0.05)',
             borderRadius: '16px',
@@ -343,75 +423,199 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
           </div>
 
           {/* Chat Form Input */}
-          <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: '8px', width: '100%' }}>
-            <input
-              type="text"
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              placeholder={
-                roomData.chatRound === 1
-                  ? isMyTurn
-                    ? "Type your description..."
-                    : `Waiting for ${currentSpeaker}...`
-                  : "Discuss who the imposter is..."
-              }
-              className="input-modern"
-              disabled={roomData.chatRound === 1 && !isMyTurn}
-              style={{ flex: 1 }}
-              maxLength={100}
-            />
-            <button
-              type="submit"
+          {!isRoundFinished && (
+            <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: '8px', width: '100%' }}>
+              <input
+                type="text"
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder={isMyTurn ? "Type your message..." : `Waiting for ${currentSpeaker}...`}
+                className="input-modern"
+                disabled={!isMyTurn}
+                style={{ flex: 1 }}
+                maxLength={100}
+              />
+              <button
+                type="submit"
+                className="btn-success"
+                disabled={!messageText.trim() || !isMyTurn}
+                style={{ width: 'auto', padding: '0 20px', borderRadius: '12px', fontSize: '14px', minHeight: '48px' }}
+              >
+                Send
+              </button>
+            </form>
+          )}
+
+          {/* Host Start Voting Action */}
+          {isRoundFinished && isHost && (
+            <motion.button
+              onClick={handleStartVoting}
               className="btn-success"
-              disabled={!messageText.trim() || (roomData.chatRound === 1 && !isMyTurn)}
-              style={{ width: 'auto', padding: '0 20px', borderRadius: '12px', fontSize: '14px', minHeight: '48px' }}
+              style={{
+                padding: '14px',
+                fontSize: '16px',
+                fontWeight: 700,
+                width: '100%',
+                borderRadius: '16px',
+                background: 'linear-gradient(135deg, #00b894, #00cec9)',
+                boxShadow: '0 4px 20px rgba(0,206,201,0.4)',
+              }}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
             >
-              Send
-            </button>
-          </form>
-
+              🗳️ Start Voting Stage
+            </motion.button>
+          )}
         </div>
-      ) : null}
+      )}
 
-      {/* Reveal Imposters Button (Only shows when results are revealed OR for the Host to trigger) */}
-      {isHost ? (
-        <motion.button
-          onClick={handleHostReveal}
-          className="btn-danger"
-          style={{
-            padding: '16px',
-            fontSize: '16px',
-            fontWeight: 700,
-            width: '100%',
+      {/* 2. VOTING MODE (Show when voting has started, but results are not yet revealed) */}
+      {!localShowImposters && roomData.votingStarted && (
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          
+          <div style={{
+            background: 'rgba(108, 92, 231, 0.12)',
+            border: '1px solid rgba(108, 92, 231, 0.2)',
+            borderRadius: '12px',
+            padding: '10px 12px',
+            textAlign: 'center',
+            fontSize: '13px',
+            fontWeight: 600,
+            color: '#a29bfe'
+          }}>
+            {!allVoted ? "🗳️ Select who you think is the Imposter!" : "🎉 All votes cast! Host can reveal results."}
+          </div>
+
+          {/* Player Vote Options */}
+          {!allVoted && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+              {roomData.players.map((p, idx) => {
+                if (p.name === localName) return null; // Can't vote for yourself
+                const hasVoted = votes[localName];
+                const isSelected = votes[localName] === p.name;
+                
+                return (
+                  <motion.button
+                    key={idx}
+                    onClick={() => handleCastVote(p.name)}
+                    disabled={!!hasVoted}
+                    style={{
+                      padding: '14px',
+                      fontSize: '16px',
+                      borderRadius: '12px',
+                      background: isSelected ? 'linear-gradient(135deg, #6c5ce7, #a29bfe)' : 'rgba(255, 255, 255, 0.05)',
+                      border: isSelected ? '1px solid #6c5ce7' : '1px solid rgba(255, 255, 255, 0.1)',
+                      color: '#fff',
+                      fontWeight: 600,
+                      opacity: hasVoted && !isSelected ? 0.5 : 1
+                    }}
+                    whileHover={{ scale: hasVoted ? 1 : 1.02 }}
+                    whileTap={{ scale: hasVoted ? 1 : 0.98 }}
+                  >
+                    {p.name} {isSelected && ' ✅'}
+                  </motion.button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Voting Tracker */}
+          <div style={{
+            background: 'rgba(0,0,0,0.2)',
+            padding: '14px',
             borderRadius: '16px',
-            background: 'linear-gradient(135deg, #e17055, #d63031)',
-            boxShadow: '0 4px 20px rgba(214,48,49,0.4)',
-            opacity: isRevealing ? 0.7 : 1,
-            marginTop: '8px',
-          }}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          disabled={isRevealing}
-        >
-          {isRevealing ? 'Revealing...' : roomData.showImposters ? '🕵️ Hide Imposters' : '🕵️ Reveal Imposters'}
-        </motion.button>
-      ) : !roomData.showImposters ? (
-        <div style={{
-          width: '100%',
-          padding: '16px',
-          textAlign: 'center',
-          borderRadius: '16px',
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          marginTop: '8px',
-        }}>
-          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
-            ⌛ Waiting for host to reveal imposters...
-          </p>
-        </div>
-      ) : null}
+            border: '1px solid rgba(255,255,255,0.05)'
+          }}>
+            <p style={{
+              fontSize: '11px',
+              color: 'rgba(255,255,255,0.3)',
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
+              textAlign: 'center',
+              marginBottom: '10px'
+            }}>
+              Voted Status ({totalVotesCast} / {roomData.players.length})
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '6px' }}>
+              {roomData.players.map((p, idx) => {
+                const voted = votes[p.name];
+                return (
+                  <span 
+                    key={idx} 
+                    style={{
+                      fontSize: '11px',
+                      padding: '4px 8px',
+                      borderRadius: '8px',
+                      background: voted ? 'rgba(0, 184, 148, 0.15)' : 'rgba(214, 48, 49, 0.12)',
+                      color: voted ? '#00b894' : '#ff7675',
+                      border: voted ? '1px solid rgba(0, 184, 148, 0.2)' : '1px solid rgba(214, 48, 49, 0.2)'
+                    }}
+                  >
+                    {p.name}: {voted ? 'Voted' : 'Voting...'}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
 
-      {/* Imposters & Secret Word Display Card */}
+          {/* Tally results once everyone has voted */}
+          {allVoted && (
+            <motion.div 
+              className="glass-card" 
+              style={{ width: '100%', borderColor: 'rgba(108, 92, 231, 0.3)', padding: '16px' }}
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+            >
+              <h4 style={{ textAlign: 'center', color: '#fdcb6e', marginBottom: '10px' }}>Voting Results</h4>
+              {Object.entries(voteCounts).sort((a,b) => b[1] - a[1]).map(([name, count], idx) => (
+                <div 
+                  key={idx} 
+                  style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    padding: '8px 12px', 
+                    background: idx === 0 && count > 0 ? 'rgba(214, 48, 49, 0.15)' : 'rgba(255,255,255,0.03)',
+                    borderRadius: '8px',
+                    marginBottom: '6px',
+                    border: idx === 0 && count > 0 ? '1px solid rgba(214, 48, 49, 0.3)' : '1px solid transparent'
+                  }}
+                >
+                  <span style={{ fontWeight: idx === 0 && count > 0 ? 700 : 500, color: idx === 0 && count > 0 ? '#ff7675' : '#fff' }}>
+                    {name} {idx === 0 && count > 0 ? '👑 (Suspected)' : ''}
+                  </span>
+                  <span style={{ fontWeight: 700 }}>{count} {count === 1 ? 'vote' : 'votes'}</span>
+                </div>
+              ))}
+            </motion.div>
+          )}
+
+          {/* Host Action: Reveal Imposters Button (Only enabled once all players have voted) */}
+          {isHost && (
+            <motion.button
+              onClick={handleHostReveal}
+              className="btn-danger"
+              disabled={!allVoted || isRevealing}
+              style={{
+                padding: '16px',
+                fontSize: '16px',
+                fontWeight: 700,
+                width: '100%',
+                borderRadius: '16px',
+                background: 'linear-gradient(135deg, #e17055, #d63031)',
+                boxShadow: '0 4px 20px rgba(214,48,49,0.4)',
+                opacity: !allVoted || isRevealing ? 0.5 : 1,
+                marginTop: '6px'
+              }}
+              whileHover={{ scale: !allVoted ? 1 : 1.02 }}
+              whileTap={{ scale: !allVoted ? 1 : 0.98 }}
+            >
+              🕵️ Reveal Imposters
+            </motion.button>
+          )}
+        </div>
+      )}
+
+      {/* 3. REVEALED DISPLAY MODE (Triggered after Host clicks Reveal Imposters) */}
       <AnimatePresence>
         {localShowImposters && (
           <motion.div
@@ -517,7 +721,7 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
       </AnimatePresence>
 
       {/* Host Restart Control */}
-      {isHost && (
+      {isHost && (localShowImposters || (roomData.votingStarted && allVoted)) && (
         <motion.button
           onClick={handleHostRestart}
           className="btn-success"
