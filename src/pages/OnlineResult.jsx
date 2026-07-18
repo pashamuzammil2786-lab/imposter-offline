@@ -15,6 +15,25 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
   const revealIntervalRef = useRef(null);
   const chatEndRef = useRef(null);
 
+  // Refs to prevent useEffect resubscriptions and interval clearing
+  const localShowImpostersRef = useRef(false);
+  const isRevealingRef = useRef(false);
+
+  useEffect(() => {
+    localShowImpostersRef.current = localShowImposters;
+  }, [localShowImposters]);
+
+  useEffect(() => {
+    isRevealingRef.current = isRevealing;
+  }, [isRevealing]);
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (revealIntervalRef.current) clearInterval(revealIntervalRef.current);
+    };
+  }, []);
+
   const localName = gameState.onlinePlayerName;
   const roomId = gameState.onlineRoomId;
 
@@ -35,9 +54,9 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
         }
 
         // Sync imposter reveal state across all phones
-        if (data.showImposters && !localShowImposters && !isRevealing) {
+        if (data.showImposters && !localShowImpostersRef.current && !isRevealingRef.current) {
           triggerLocalReveal(data.imposters, data.players);
-        } else if (!data.showImposters && localShowImposters) {
+        } else if (!data.showImposters && localShowImpostersRef.current) {
           setLocalShowImposters(false);
           setRevealedImposters([]);
         }
@@ -46,9 +65,8 @@ const OnlineResult = ({ navigateTo, gameState, updateGameState, resetGame }) => 
 
     return () => {
       unsubscribe();
-      if (revealIntervalRef.current) clearInterval(revealIntervalRef.current);
     };
-  }, [roomId, localShowImposters, isRevealing]);
+  }, [roomId]);
 
   // Autoscroll chat
   useEffect(() => {
